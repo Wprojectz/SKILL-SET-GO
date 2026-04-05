@@ -2,6 +2,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useProfileSummary } from "@/hooks/useProfileSummary";
 import {
   LayoutDashboard,
   FileSearch,
@@ -35,6 +36,7 @@ interface DashboardLayoutProps {
 const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const { user, signOut } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { displayName } = useProfileSummary();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -150,11 +152,11 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </button>
                 <div className="hidden text-right sm:block">
-                  <p className="font-body text-sm font-medium text-foreground">{user?.email?.split("@")[0] || "User"}</p>
+                  <p className="font-body text-sm font-medium text-foreground">{displayName}</p>
                   <p className="font-body text-xs text-muted-foreground">{user?.email}</p>
                 </div>
                 <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-600 font-heading text-sm font-bold text-white shadow-sm shadow-sky-500/20">
-                  {user?.email?.[0]?.toUpperCase() || "U"}
+                  {displayName?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || "U"}
                 </div>
               </div>
             </div>

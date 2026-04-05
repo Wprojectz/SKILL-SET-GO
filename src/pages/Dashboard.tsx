@@ -9,6 +9,7 @@ import { ErrorState, LoadingState } from "@/components/PageState";
 import type { AIAnalysisResult } from "@/lib/aiAnalysisTypes";
 import type { Tables } from "@/integrations/supabase/types";
 import { parseAIAnalysisResult } from "@/lib/analysisResultSchema";
+import { useProfileSummary } from "@/hooks/useProfileSummary";
 
 type AnalysisHistoryRow = Tables<"analysis_history">;
 
@@ -30,6 +31,7 @@ const parseHistoryRow = (row: AnalysisHistoryRow): HistoryRow => ({
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const { displayName } = useProfileSummary();
   const navigate = useNavigate();
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -125,7 +127,7 @@ const Dashboard = () => {
             <div className="mt-3 flex items-start justify-between gap-6">
               <div>
                 <h2 className="font-heading text-3xl font-bold text-foreground">
-                  Welcome back{user?.email ? `, ${user.email.split("@")[0]}` : ""}.
+                  Welcome back{displayName ? `, ${displayName}` : user?.email ? `, ${user.email.split("@")[0]}` : ""}.
                 </h2>
                 <p className="mt-3 max-w-xl font-body text-base leading-7 text-muted-foreground">
                   Track your progress, review your latest match insights, and decide what to improve next with a cleaner dashboard view.
