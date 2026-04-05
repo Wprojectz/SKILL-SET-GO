@@ -27,6 +27,91 @@ interface AIResultsSectionProps {
   results: AIAnalysisResult;
 }
 
+const DISPLAY_LABELS: Record<string, string> = {
+  marketing: "Marketing Skill Set",
+  "business development": "Business Development Exposure",
+  "project management": "Project Management Skills",
+  "data analysis": "Data Analysis Skills",
+  communication: "Communication Ability",
+  teamwork: "Team Collaboration",
+  leadership: "Leadership Exposure",
+  testing: "Testing Practice",
+  "ci/cd": "CI/CD Familiarity",
+  "rest api": "REST API Development",
+  "google cloud": "Google Cloud Exposure",
+  aws: "AWS Exposure",
+  azure: "Azure Exposure",
+  postgresql: "PostgreSQL Experience",
+  mongodb: "MongoDB Experience",
+  docker: "Docker Familiarity",
+  kubernetes: "Kubernetes Exposure",
+  sales: "Sales Background",
+  crm: "CRM Knowledge",
+  outreach: "Outreach Experience",
+  partnerships: "Partnership Development",
+  reporting: "Reporting and Documentation",
+  analytics: "Analytics Capability",
+  "bachelor s degree in a relevant field": "Education Requirement (Relevant Degree)",
+  "lack of direct marketing or business development experience": "Direct Marketing or Business Development Experience",
+  "mba in marketing or operations": "MBA in Marketing or Operations",
+  "project management skills": "Project Management Skills",
+  "data analysis skills": "Data Analysis Skills",
+};
+
+const toDisplayText = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  if (DISPLAY_LABELS[normalized]) return DISPLAY_LABELS[normalized];
+
+  return value
+    .replace(/\bcrm\b/gi, "CRM")
+    .replace(/\bmba\b/gi, "MBA")
+    .replace(/\bqgis\b/gi, "QGIS")
+    .replace(/\bc\+\+\b/g, "C++")
+    .replace(/\bci\/cd\b/gi, "CI/CD")
+    .replace(/\bapi\b/gi, "API")
+    .replace(/\bnlp\b/gi, "NLP")
+    .replace(/\baws\b/gi, "AWS")
+    .replace(/\bui\b/gi, "UI")
+    .replace(/\bux\b/gi, "UX")
+    .replace(/\b[a-z]/g, (char) => char.toUpperCase());
+};
+
+const getRecommendationSummary = (results: AIAnalysisResult) => {
+  const strong = results.matching.strong.length;
+  const weak = results.matching.weak.length;
+  const missing = results.matching.missing.length;
+  const transferable = results.matching.transferable.length;
+  const mustHaveMissing = results.matching_evidence?.filter(
+    (item) => item.requirement_type === "must_have" && item.status === "missing"
+  ).length || 0;
+
+  if (results.final_decision.recommendation === "Strong Hire") {
+    return "Clear role alignment with direct evidence across the most important requirements.";
+  }
+
+  if (results.final_decision.recommendation === "Consider") {
+    if (transferable > 0 && mustHaveMissing === 0) {
+      return `Not a direct one-to-one match yet, but ${transferable} transferable strength${transferable > 1 ? "s" : ""} make this profile worth considering.`;
+    }
+
+    if (weak > 0) {
+      return `There is visible potential here, but ${weak} partial match${weak > 1 ? "es" : ""} still need stronger resume proof.`;
+    }
+
+    return "The candidate shows some role-relevant potential, but needs clearer evidence in the resume.";
+  }
+
+  if (mustHaveMissing > 0) {
+    return `The candidate is currently missing ${mustHaveMissing} must-have requirement${mustHaveMissing > 1 ? "s" : ""}, which weakens immediate hiring confidence.`;
+  }
+
+  if (missing > strong) {
+    return "There are too many uncovered requirements right now for this role to be a strong fit.";
+  }
+
+  return "The current resume does not yet show enough direct alignment for this target role.";
+};
+
 const ScoreRing = ({ score, label, color }: { score: number; label: string; color: string }) => {
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
@@ -153,7 +238,12 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
             {r.final_decision.recommendation}
           </p>
           <p className="mt-1 font-heading text-2xl font-bold text-foreground">{r.final_decision.probability}% Match</p>
-          <p className="mx-auto mt-3 max-w-2xl font-body text-sm text-muted-foreground">{r.final_decision.reason}</p>
+          <p className="mx-auto mt-3 max-w-2xl font-body text-sm text-muted-foreground">
+            {r.final_decision.reason || getRecommendationSummary(r)}
+          </p>
+          <p className="mx-auto mt-2 max-w-2xl font-body text-sm leading-7 text-foreground/85">
+            {getRecommendationSummary(r)}
+          </p>
 
           <div className="mt-6 grid gap-3 md:grid-cols-4">
             {[
@@ -213,9 +303,9 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
       <SectionCard icon={Users} title="Candidate Profile" subtitle={r.candidate_profile.name || "Candidate"} accent="bg-accent">
         <div className="flex flex-wrap gap-2">
           <Badge text={r.candidate_profile.level} variant="blue" />
-          <Badge text={r.candidate_profile.specialization || "General"} variant="yellow" />
+          <Badge text={toDisplayText(r.candidate_profile.specialization || "General")} variant="yellow" />
           {r.candidate_profile.domains.map((domain) => (
-            <Badge key={domain} text={domain} variant="default" />
+            <Badge key={domain} text={toDisplayText(domain)} variant="default" />
           ))}
         </div>
       </SectionCard>
@@ -225,25 +315,25 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
           {r.matching.strong.length > 0 && (
             <div>
               <p className="mb-2 font-heading text-xs font-medium uppercase tracking-wider text-aqua">Strong Matches</p>
-              <div className="flex flex-wrap gap-2">{r.matching.strong.map((skill) => <Badge key={skill} text={skill} variant="green" />)}</div>
+              <div className="flex flex-wrap gap-2">{r.matching.strong.map((skill) => <Badge key={skill} text={toDisplayText(skill)} variant="green" />)}</div>
             </div>
           )}
           {r.matching.weak.length > 0 && (
             <div>
               <p className="mb-2 font-heading text-xs font-medium uppercase tracking-wider text-primary">Weak Matches</p>
-              <div className="flex flex-wrap gap-2">{r.matching.weak.map((skill) => <Badge key={skill} text={skill} variant="yellow" />)}</div>
+              <div className="flex flex-wrap gap-2">{r.matching.weak.map((skill) => <Badge key={skill} text={toDisplayText(skill)} variant="yellow" />)}</div>
             </div>
           )}
           {r.matching.missing.length > 0 && (
             <div>
               <p className="mb-2 font-heading text-xs font-medium uppercase tracking-wider text-muted-red">Missing Skills</p>
-              <div className="flex flex-wrap gap-2">{r.matching.missing.map((skill) => <Badge key={skill} text={skill} variant="red" />)}</div>
+              <div className="flex flex-wrap gap-2">{r.matching.missing.map((skill) => <Badge key={skill} text={toDisplayText(skill)} variant="red" />)}</div>
             </div>
           )}
           {r.matching.transferable.length > 0 && (
             <div>
               <p className="mb-2 font-heading text-xs font-medium uppercase tracking-wider text-accent">Transferable Skills</p>
-              <div className="flex flex-wrap gap-2">{r.matching.transferable.map((skill) => <Badge key={skill} text={skill} variant="blue" />)}</div>
+              <div className="flex flex-wrap gap-2">{r.matching.transferable.map((skill) => <Badge key={skill} text={toDisplayText(skill)} variant="blue" />)}</div>
             </div>
           )}
         </div>
@@ -255,7 +345,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
             {r.matching_evidence.slice(0, 8).map((item, index) => (
               <div key={`${item.skill}-${index}`} className="rounded-xl border border-border bg-secondary/20 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-heading text-sm font-semibold capitalize text-foreground">{item.skill}</span>
+                  <span className="font-heading text-sm font-semibold text-foreground">{toDisplayText(item.skill)}</span>
                   <Badge
                     text={item.status.replace("_", " ")}
                     variant={item.status === "strong" ? "green" : item.status === "weak" ? "yellow" : item.status === "missing" ? "red" : "blue"}
@@ -300,7 +390,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
       <div className="grid gap-6 md:grid-cols-2">
         <SectionCard icon={Zap} title="Explicit Skills" subtitle={`${r.skills.explicit.length} detected`}>
           <div className="flex flex-wrap gap-2">
-            {r.skills.explicit.map((skill) => <Badge key={skill} text={skill} variant="green" />)}
+            {r.skills.explicit.map((skill) => <Badge key={skill} text={toDisplayText(skill)} variant="green" />)}
           </div>
         </SectionCard>
         <SectionCard icon={Brain} title="Implicit Skills" subtitle="Inferred from context">
@@ -309,7 +399,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
               <div key={`${skill.skill}-${index}`} className="flex items-start gap-2">
                 <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                 <div>
-                  <span className="font-body text-sm font-medium text-foreground">{skill.skill}</span>
+                  <span className="font-body text-sm font-medium text-foreground">{toDisplayText(skill.skill)}</span>
                   <span className="ml-2 font-body text-xs text-muted-foreground">- {skill.evidence}</span>
                 </div>
               </div>
@@ -327,7 +417,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
             return (
               <div key={skill}>
                 <div className="mb-1 flex justify-between">
-                  <span className="font-body text-xs capitalize text-foreground">{skill}</span>
+                  <span className="font-body text-xs text-foreground">{toDisplayText(skill)}</span>
                   <span className="font-body text-[10px] text-muted-foreground">{level}</span>
                 </div>
                 <div className="h-1.5 w-full rounded-full bg-secondary">
@@ -344,7 +434,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
           {r.soft_skills.map((skill, index) => (
             <div key={`${skill.skill}-${index}`} className="rounded-lg border border-border bg-secondary/30 p-3">
               <div className="mb-1 flex justify-between">
-                <span className="font-body text-sm font-medium text-foreground">{skill.skill}</span>
+                <span className="font-body text-sm font-medium text-foreground">{toDisplayText(skill.skill)}</span>
                 <span className={`font-heading text-sm font-bold ${skill.confidence >= 70 ? "text-aqua" : skill.confidence >= 40 ? "text-primary" : "text-muted-foreground"}`}>
                   {skill.confidence}%
                 </span>
@@ -379,7 +469,7 @@ const AIResultsSection = ({ results }: AIResultsSectionProps) => {
           <div className="space-y-2">
             {r.gaps.map((gap, index) => (
               <div key={`${gap.skill}-${index}`} className="flex items-center justify-between rounded-lg border border-border bg-secondary/20 px-4 py-2.5">
-                <span className="font-body text-sm text-foreground">{gap.skill}</span>
+                <span className="font-body text-sm text-foreground">{toDisplayText(gap.skill)}</span>
                 <div className="flex gap-2">
                   <Badge text={gap.severity} variant={gap.severity === "Critical" ? "red" : gap.severity === "Moderate" ? "yellow" : "default"} />
                   <Badge text={gap.learnable} variant={gap.learnable === "Quick" ? "green" : gap.learnable === "Medium" ? "yellow" : "red"} />

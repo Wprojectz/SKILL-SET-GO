@@ -5,7 +5,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const SYSTEM_PROMPT = `You are an Elite AI Talent Intelligence Engine. Perform deep multi-dimensional analysis.
+const SYSTEM_PROMPT = `You are an Elite AI Talent Intelligence Engine. Perform a strict hiring-style analysis of a resume against a job description.
 
 INPUT: Resume text and Job description.
 
@@ -46,11 +46,43 @@ Analyze across these dimensions and return STRICT JSON (no markdown, no code fen
 }
 
 RULES:
-- Infer implicit skills from project descriptions, tools used, responsibilities
-- Classify proficiency using duration, complexity, ownership signals
-- Be critical like a real hiring manager
+- Infer implicit skills from project descriptions, tools used, responsibilities, and verbs that imply execution ownership
+- Classify proficiency using duration, complexity, ownership signals, and evidence strength
+- Prefer precision over generosity: do not mark a skill as strong if the resume only hints at it weakly
+- Strong match = clear direct evidence in resume plus direct relevance to the job
+- Weak match = relevant skill appears, but evidence/proficiency is limited
+- Transferable = adjacent skill that may help but is not a direct match
+- Missing = the requirement is clearly in the job but not supported by resume evidence
+- Separate must-have from nice-to-have carefully using requirement wording
+- Use stricter scoring when must-have requirements are missing
+- optimized_sections.skills_section should be concise, ATS-friendly, and tailored to the job
+- optimized_sections.experience_bullets should sound realistic and resume-ready, not generic
 - All scores 0-100
 - Return ONLY valid JSON, no extra text`;
+
+const KNOWN_SKILLS: Record<string, string[]> = {
+  programming: [
+    "javascript", "typescript", "python", "java", "c++", "c#", "go", "rust", "sql", "html", "css",
+  ],
+  frameworks: [
+    "react", "next.js", "vue", "angular", "node.js", "express", "django", "flask", "spring boot",
+    "tailwind", "graphql", "rest api", "react native",
+  ],
+  tools: [
+    "git", "github", "docker", "kubernetes", "terraform", "jira", "figma", "postman", "ci/cd",
+    "testing", "jest", "cypress", "playwright",
+  ],
+  databases: [
+    "postgresql", "mysql", "mongodb", "redis", "sqlite", "firebase", "supabase",
+  ],
+  cloud: [
+    "aws", "azure", "google cloud", "serverless", "github actions",
+  ],
+  other: [
+    "agile", "scrum", "microservices", "system design", "authentication", "oauth", "jwt",
+    "machine learning", "data analysis", "power bi", "tableau", "nlp",
+  ],
+};
 
 const SKILL_ALIASES: Record<string, string> = {
   js: "javascript",
@@ -160,6 +192,11 @@ type ScoreBreakdown = {
   improvement_priority: string[];
 };
 
+type ExtractedSkillSet = {
+  skills: string[];
+  categorized: Record<string, string[]>;
+};
+
 const toSentencePool = (text: string) =>
   text
     .split(SENTENCE_SPLIT_REGEX)
@@ -175,9 +212,180 @@ const normalizeSkill = (skill: string) => {
 
 const dedupeSkills = (skills: string[] = []) => Array.from(new Set(skills.map(normalizeSkill).filter(Boolean)));
 
+const mergeSkillArrays = (...groups: Array<string[] | undefined>) => dedupeSkills(groups.flatMap((group) => group || []));
+const dedupeText = (...groups: Array<string[] | undefined>) => Array.from(new Set(groups.flatMap((group) => group || []).filter(Boolean)));
+
 const clampScore = (value: unknown) => {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+};
+
+const weightedAverage = (primary: number, secondary: number, primaryWeight = 0.65) =>
+  clampScore(primary * primaryWeight + secondary * (1 - primaryWeight));
+
+const escapeSkillForRegex = (skill: string) => escapeRegExp(skill).replace(/\s+/g, "\\s+");
+
+const extractKnownSkills = (text: string): ExtractedSkillSet => {
+  const normalizedText = text.toLowerCase();
+  const categorized = Object.fromEntries(Object.keys(KNOWN_SKILLS).map((key) => [key, [] as string[]]));
+
+  for (const [category, skills] of Object.entries(KNOWN_SKILLS)) {
+    for (const skill of skills) {
+      if (new RegExp(`\\b${escapeSkillForRegex(skill)}\\b`, "i").test(normalizedText)) {
+        categorized[category].push(skill);
+      }
+    }
+  }
+
+  return {
+    skills: dedupeSkills(Object.values(categorized).flat()),
+    categorized: Object.fromEntries(
+      Object.entries(categorized).map(([category, skills]) => [category, dedupeSkills(skills)])
+    ),
+  };
+};
+
+const inferMustHaveSkills = (jobText: string, extractedSkills: string[]) => {
+  const sentences = toSentencePool(jobText);
+
+  const mustHave = extractedSkills.filter((skill) =>
+    sentences.some((sentence) => {
+      const sentenceLower = sentence.toLowerCase();
+      return MUST_HAVE_MARKERS.some((marker) => sentenceLower.includes(marker)) &&
+        new RegExp(`\\b${escapeSkillForRegex(skill)}\\b`, "i").test(sentence);
+    })
+  );
+
+  if (mustHave.length > 0) return dedupeSkills(mustHave);
+
+  const fallbackLines = sentences.filter((sentence) =>
+    /(responsibilities|requirements|qualifications|skills|experience)/i.test(sentence)
+  );
+
+  return dedupeSkills(
+    extractedSkills.filter((skill) =>
+      fallbackLines.some((sentence) => new RegExp(`\\b${escapeSkillForRegex(skill)}\\b`, "i").test(sentence))
+    ).slice(0, Math.min(8, extractedSkills.length))
+  );
+};
+
+const inferNiceToHaveSkills = (jobText: string, extractedSkills: string[], mustHave: string[]) => {
+  const sentences = toSentencePool(jobText);
+
+  const niceToHave = extractedSkills.filter((skill) =>
+    !mustHave.includes(skill) &&
+    sentences.some((sentence) => {
+      const sentenceLower = sentence.toLowerCase();
+      return NICE_TO_HAVE_MARKERS.some((marker) => sentenceLower.includes(marker)) &&
+        new RegExp(`\\b${escapeSkillForRegex(skill)}\\b`, "i").test(sentence);
+    })
+  );
+
+  return dedupeSkills(niceToHave);
+};
+
+const inferTransferableSkills = (resumeSkills: string[], missingSkills: string[]) => {
+  const transferableGroups = [
+    ["react", "vue", "angular"],
+    ["postgresql", "mysql", "mongodb"],
+    ["aws", "azure", "google cloud"],
+    ["jest", "cypress", "playwright", "testing"],
+    ["rest api", "graphql"],
+    ["javascript", "typescript"],
+  ];
+
+  const transferable = new Set<string>();
+
+  for (const missing of missingSkills) {
+    const group = transferableGroups.find((skills) => skills.includes(missing));
+    if (!group) continue;
+
+    if (group.some((skill) => resumeSkills.includes(skill) && skill !== missing)) {
+      transferable.add(missing);
+    }
+  }
+
+  return Array.from(transferable);
+};
+
+const buildDeterministicScores = (
+  resumeText: string,
+  matching: NonNullable<AnalysisResult["matching"]>,
+  jobAnalysis: NonNullable<AnalysisResult["job_analysis"]>,
+  resumeSkills: string[]
+) => {
+  const mustHave = jobAnalysis.must_have || [];
+  const niceToHave = jobAnalysis.nice_to_have || [];
+  const totalRequirements = mustHave.length + niceToHave.length;
+  const strong = matching.strong || [];
+  const weak = matching.weak || [];
+  const transferable = matching.transferable || [];
+  const missing = matching.missing || [];
+
+  const strongMust = strong.filter((skill) => mustHave.includes(skill)).length;
+  const weakMust = weak.filter((skill) => mustHave.includes(skill)).length;
+  const missingMust = missing.filter((skill) => mustHave.includes(skill)).length;
+  const matchedWeighted = strong.length + weak.length * 0.55 + transferable.length * 0.35;
+  const overallCoverage = totalRequirements > 0 ? matchedWeighted / totalRequirements : 0.5;
+  const mustCoverage =
+    mustHave.length > 0 ? (strongMust + weakMust * 0.45) / mustHave.length : overallCoverage;
+
+  let ats = 25 + overallCoverage * 45 + mustCoverage * 20;
+  if (/\d+%|\d+x|\$\d+|\d+\s+(users|clients|projects|members)/i.test(resumeText)) ats += 5;
+  if (/github|linkedin|portfolio/i.test(resumeText)) ats += 3;
+  if (resumeSkills.length >= 8) ats += 4;
+
+  let practicalFit = 15 + mustCoverage * 55 + overallCoverage * 20 + strong.length * 2.5 - missingMust * 6;
+  practicalFit += transferable.length * 2;
+
+  let learningCurve = 20 + missingMust * 18 + Math.max(0, missing.length - missingMust) * 8 - transferable.length * 3;
+  if (mustCoverage > 0.75) learningCurve -= 8;
+
+  return {
+    ats: clampScore(ats),
+    practical_fit: clampScore(practicalFit),
+    learning_curve: clampScore(learningCurve),
+  };
+};
+
+const inferGapSeverity = (skill: string, mustHave: string[], transferable: string[]) => {
+  if (mustHave.includes(skill) && !transferable.includes(skill)) return "Critical";
+  if (mustHave.includes(skill) || transferable.includes(skill)) return "Moderate";
+  return "Minor";
+};
+
+const inferLearnableWindow = (skill: string) => {
+  if (["kubernetes", "system design", "machine learning", "microservices", "aws", "azure", "google cloud"].includes(skill)) {
+    return "Long";
+  }
+  if (["typescript", "testing", "ci/cd", "graphql", "docker", "postgresql"].includes(skill)) {
+    return "Medium";
+  }
+  return "Quick";
+};
+
+const buildOptimizedSkillsSection = (strong: string[], weak: string[], transferable: string[]) =>
+  mergeSkillArrays(strong, weak.slice(0, 4), transferable.slice(0, 2)).join(", ");
+
+const buildOptimizedBullets = (strong: string[], weak: string[]) => {
+  const primary = strong[0];
+  const secondary = strong[1] || weak[0];
+  const tertiary = weak[1];
+
+  const bullets = [
+    primary
+      ? `Delivered production-ready work using ${primary}, translating requirements into maintainable features and measurable outcomes.`
+      : "Delivered production-ready features aligned with business requirements and team goals.",
+    secondary
+      ? `Collaborated across the development lifecycle using ${secondary} to improve reliability, usability, and implementation quality.`
+      : "Collaborated across the development lifecycle to improve reliability, usability, and implementation quality.",
+  ];
+
+  if (tertiary) {
+    bullets.push(`Built stronger evidence around ${tertiary} through hands-on implementation, testing, and iteration.`);
+  }
+
+  return bullets;
 };
 
 const findEvidence = (sentences: string[], skill: string, fallback: string[] = []) => {
@@ -304,10 +512,19 @@ const buildScoreBreakdown = (result: AnalysisResult) => {
 };
 
 const normalizeAnalysis = (result: AnalysisResult, resumeText: string, jobText: string): AnalysisResult => {
-  const normalizedMustHave = dedupeSkills(result.job_analysis?.must_have || []);
-  const normalizedNiceToHave = dedupeSkills(result.job_analysis?.nice_to_have || []);
+  const resumeExtracted = extractKnownSkills(resumeText);
+  const jobExtracted = extractKnownSkills(jobText);
+  const modelMustHave = dedupeSkills(result.job_analysis?.must_have || []);
+  const modelNiceToHave = dedupeSkills(result.job_analysis?.nice_to_have || []);
+  const inferredMustHave = inferMustHaveSkills(jobText, jobExtracted.skills);
+  const normalizedMustHave = mergeSkillArrays(modelMustHave, inferredMustHave);
+  const inferredNiceToHave = inferNiceToHaveSkills(jobText, jobExtracted.skills, normalizedMustHave);
+  const normalizedNiceToHave = mergeSkillArrays(
+    modelNiceToHave.filter((skill) => !normalizedMustHave.includes(skill)),
+    inferredNiceToHave.filter((skill) => !normalizedMustHave.includes(skill))
+  );
 
-  const normalizedExplicit = dedupeSkills(result.skills?.explicit || []);
+  const normalizedExplicit = mergeSkillArrays(result.skills?.explicit, resumeExtracted.skills);
   const normalizedStrong = dedupeSkills(result.matching?.strong || []);
   const normalizedWeak = dedupeSkills(result.matching?.weak || []);
   const normalizedMissing = dedupeSkills(result.matching?.missing || []);
@@ -318,20 +535,57 @@ const normalizeAnalysis = (result: AnalysisResult, resumeText: string, jobText: 
   );
 
   const categorized = Object.fromEntries(
-    Object.entries(result.skills?.categorized || {}).map(([category, skills]) => [category, dedupeSkills(skills)])
+    Object.entries({ ...resumeExtracted.categorized, ...(result.skills?.categorized || {}) }).map(([category, skills]) => [
+      category,
+      dedupeSkills(Array.isArray(skills) ? skills : []),
+    ])
+  );
+
+  const combinedRequirements = mergeSkillArrays(normalizedMustHave, normalizedNiceToHave);
+  const deterministicStrong = combinedRequirements.filter((skill) => resumeExtracted.skills.includes(skill));
+  const deterministicMissing = combinedRequirements.filter((skill) => !resumeExtracted.skills.includes(skill));
+  const deterministicTransferable = inferTransferableSkills(resumeExtracted.skills, deterministicMissing);
+  const deterministicWeak = (result.matching?.weak || []).filter(
+    (skill) =>
+      !deterministicStrong.includes(normalizeSkill(skill)) &&
+      !deterministicMissing.includes(normalizeSkill(skill))
   );
 
   const matching = {
-    strong: normalizedStrong,
-    weak: normalizedWeak.filter((skill) => !normalizedStrong.includes(skill)),
-    missing: normalizedMissing.filter((skill) => !normalizedStrong.includes(skill)),
-    transferable: normalizedTransferable.filter((skill) => !normalizedStrong.includes(skill)),
+    strong: mergeSkillArrays(normalizedStrong, deterministicStrong),
+    weak: mergeSkillArrays(normalizedWeak, deterministicWeak)
+      .filter((skill) => !mergeSkillArrays(normalizedStrong, deterministicStrong).includes(skill)),
+    missing: mergeSkillArrays(normalizedMissing, deterministicMissing)
+      .filter((skill) => !mergeSkillArrays(normalizedStrong, deterministicStrong).includes(skill)),
+    transferable: mergeSkillArrays(normalizedTransferable, deterministicTransferable)
+      .filter((skill) => !mergeSkillArrays(normalizedStrong, deterministicStrong).includes(skill)),
   };
 
-  const gaps = (result.gaps || []).map((gap) => ({
-    skill: normalizeSkill(gap.skill),
-    severity: gap.severity || "Moderate",
-    learnable: gap.learnable || "Medium",
+  const deterministicScores = buildDeterministicScores(resumeText, matching, {
+    must_have: normalizedMustHave,
+    nice_to_have: normalizedNiceToHave,
+    seniority: result.job_analysis?.seniority || "",
+  }, normalizedExplicit);
+
+  const gapMap = new Map<string, { severity: string; learnable: string }>();
+  for (const gap of result.gaps || []) {
+    gapMap.set(normalizeSkill(gap.skill), {
+      severity: gap.severity || "Moderate",
+      learnable: gap.learnable || "Medium",
+    });
+  }
+  for (const skill of matching.missing) {
+    if (!gapMap.has(skill)) {
+      gapMap.set(skill, {
+        severity: inferGapSeverity(skill, normalizedMustHave, matching.transferable || []),
+        learnable: inferLearnableWindow(skill),
+      });
+    }
+  }
+  const gaps = Array.from(gapMap.entries()).map(([skill, info]) => ({
+    skill,
+    severity: info.severity,
+    learnable: info.learnable,
   }));
 
   const normalized: AnalysisResult = {
@@ -358,19 +612,25 @@ const normalizeAnalysis = (result: AnalysisResult, resumeText: string, jobText: 
     },
     matching,
     scores: {
-      ats: clampScore(result.scores?.ats),
-      practical_fit: clampScore(result.scores?.practical_fit),
-      learning_curve: clampScore(result.scores?.learning_curve),
+      ats: weightedAverage(deterministicScores.ats, clampScore(result.scores?.ats)),
+      practical_fit: weightedAverage(deterministicScores.practical_fit, clampScore(result.scores?.practical_fit)),
+      learning_curve: weightedAverage(deterministicScores.learning_curve, clampScore(result.scores?.learning_curve)),
     },
     gaps,
     resume_brand: {
       strength: result.resume_brand?.strength || "Average",
       clarity: result.resume_brand?.clarity || "",
-      improvements: result.resume_brand?.improvements || [],
+      improvements: dedupeText(
+        result.resume_brand?.improvements,
+        matching.missing.slice(0, 3).map((skill) => `Add direct evidence for ${skill}.`),
+        matching.weak.slice(0, 2).map((skill) => `Strengthen bullet points that prove ${skill}.`)
+      ),
     },
     optimized_sections: {
-      skills_section: result.optimized_sections?.skills_section || "",
-      experience_bullets: result.optimized_sections?.experience_bullets || [],
+      skills_section: result.optimized_sections?.skills_section || buildOptimizedSkillsSection(matching.strong, matching.weak, matching.transferable),
+      experience_bullets: result.optimized_sections?.experience_bullets?.length
+        ? result.optimized_sections.experience_bullets
+        : buildOptimizedBullets(matching.strong, matching.weak),
     },
     interview_questions: {
       technical: result.interview_questions?.technical || [],
@@ -378,9 +638,22 @@ const normalizeAnalysis = (result: AnalysisResult, resumeText: string, jobText: 
       scenario: result.interview_questions?.scenario || [],
     },
     final_decision: {
-      probability: clampScore(result.final_decision?.probability),
-      recommendation: result.final_decision?.recommendation || "Consider",
-      reason: result.final_decision?.reason || "",
+      probability: weightedAverage(
+        clampScore(deterministicScores.practical_fit * 0.65 + deterministicScores.ats * 0.35),
+        clampScore(result.final_decision?.probability),
+        0.7
+      ),
+      recommendation:
+        deterministicScores.practical_fit >= 75 && matching.missing.filter((skill) => normalizedMustHave.includes(skill)).length === 0
+          ? "Strong Hire"
+          : deterministicScores.practical_fit >= 50
+            ? "Consider"
+            : "Reject",
+      reason:
+        result.final_decision?.reason ||
+        (matching.missing.filter((skill) => normalizedMustHave.includes(skill)).length > 0
+          ? "Critical requirements are still missing, so the candidate is not yet a strong fit."
+          : "The candidate shows enough aligned skills to be considered, with clear areas to strengthen."),
     },
   };
 
