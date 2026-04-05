@@ -78,7 +78,7 @@ const footerColumns = [
   },
   {
     title: "Contact",
-    items: ["hello@skillsetgo.com", "+91 98765 43210", "Chennai, India"],
+    items: ["myprojects1045@gamil.com", "+91 98765 43210", "Vellore, India"],
   },
 ];
 
